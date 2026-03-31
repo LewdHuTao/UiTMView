@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+"use server";
+
 import * as cheerio from "cheerio";
 import fetchWithCookies from "@/lib/fetcher";
 import { removeScripts } from "@/lib/parser";
@@ -78,22 +79,27 @@ async function fetchCourses(campus: string, faculty: string): Promise<Course[]> 
   return courses;
 }
 
-export async function POST(req: NextRequest) {
-  const { campus, faculty } = await req.json();
-  if (!campus || !faculty) {
-    return NextResponse.json({ error: "Missing campus or faculty" }, { status: 400 });
-  }
+export async function getCourses(campus: string, faculty: string): Promise<Course[]> {
+  if (!campus || !faculty) throw new Error("Missing campus or faculty");
 
   const cacheKey = `courses_${campus}_${faculty}`;
   const cached = getCache<Course[]>(cacheKey, CACHE_TTL);
-  if (cached) return NextResponse.json(cached);
+  if (cached) return cached;
 
-  try {
-    const courses = await fetchCourses(campus, faculty);
-    setCache(cacheKey, courses);
-    return NextResponse.json(courses);
-  } catch (err) {
-    console.error("Error fetching courses:", err);
-    return NextResponse.json({ error: "Failed to fetch courses" }, { status: 500 });
+  const tries = [
+    { campus, faculty },
+    { campus, faculty: "" },
+    { campus, faculty: "All" },
+  ];
+
+  let courses: Course[] = [];
+  for (const payload of tries) {
+    try {
+      courses = await fetchCourses(payload.campus, payload.faculty);
+      if (courses.length > 0) break;
+    } catch { continue; }
   }
+
+  setCache(cacheKey, courses);
+  return courses;
 }

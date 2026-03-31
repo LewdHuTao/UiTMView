@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+"use server";
+
 import type { StudentSchedule, StudentDaySchedule, TimetableRow } from "@/types";
 
 function extractFirstWeek(schedule: StudentSchedule): TimetableRow[] {
@@ -45,24 +46,16 @@ function extractFirstWeek(schedule: StudentSchedule): TimetableRow[] {
   return rows;
 }
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const studentNo = searchParams.get("studentNo");
-  if (!studentNo) return NextResponse.json({ error: "Missing studentNo" }, { status: 400 });
+export async function getStudentSchedule(studentNo: string): Promise<{ timetable: TimetableRow[] }> {
+  if (!studentNo) throw new Error("Missing studentNo");
 
-  try {
-    const resp = await fetch(
-      `https://cdn.uitm.edu.my/jadual/baru/${studentNo}.json`,
-      { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 300 } }
-    );
-    if (!resp.ok) {
-      return NextResponse.json({ error: "Student not found or schedule unavailable" }, { status: 404 });
-    }
-    const schedule: StudentSchedule = await resp.json();
-    const timetable = extractFirstWeek(schedule);
-    return NextResponse.json({ timetable });
-  } catch (err) {
-    console.error("Error fetching student schedule:", err);
-    return NextResponse.json({ error: "Failed to fetch student schedule" }, { status: 500 });
-  }
+  const resp = await fetch(
+    `https://cdn.uitm.edu.my/jadual/baru/${studentNo}.json`,
+    { headers: { "User-Agent": "Mozilla/5.0" }, next: { revalidate: 300 } }
+  );
+
+  if (!resp.ok) throw new Error("Student not found or schedule unavailable");
+
+  const schedule: StudentSchedule = await resp.json();
+  return { timetable: extractFirstWeek(schedule) };
 }
