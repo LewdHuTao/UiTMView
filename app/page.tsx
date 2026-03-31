@@ -7,19 +7,24 @@ import Dropdown from "@/components/Dropdown";
 import Timetable from "@/components/Timetable";
 import ColorLegend from "@/components/ColorLegend";
 import ExportButtons from "@/components/ExportButtons";
+import { getCampuses } from "@/lib/actions/campus";
+import { getFaculties } from "@/lib/actions/faculty";
+import { getCourses } from "@/lib/actions/courses";
+import { getTimetable } from "@/lib/actions/timetable";
+import { getStudentSchedule } from "@/lib/actions/student";
 import type { Campus, Faculty, Course, SelectedCard, TimetableRow } from "@/types";
 
 const PRESET_COLORS = ["#8b5cf6","#3b82f6","#10b981","#f59e0b","#ef4444","#06b6d4","#ec4899","#84cc16"];
 
 interface CardState {
   id: number; courseUrl: string; courseLabel: string; group: string;
-  courses: Course[]; groups: string[]; timetable: TimetableRow[];
+  groups: string[]; timetable: TimetableRow[];
   color: string; loading: boolean;
 }
 
 const mkCard = (id: number): CardState => ({
   id, courseUrl: "", courseLabel: "", group: "",
-  courses: [], groups: [], timetable: [],
+  groups: [], timetable: [],
   color: PRESET_COLORS[id % PRESET_COLORS.length], loading: false,
 });
 
@@ -34,54 +39,71 @@ export default function HomePage() {
   const [studentError, setStudentError] = useState("");
   const [studentCards, setStudentCards] = useState<SelectedCard[]>([]);
 
+  const [manualReady, setManualReady] = useState(false);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+
   const [campus, setCampus] = useState("");
   const [faculty, setFaculty] = useState("");
   const [campuses, setCampuses] = useState<Campus[]>([]);
   const [faculties, setFaculties] = useState<Faculty[]>([]);
-  const [campusLoaded, setCampusLoaded] = useState(false);
   const [showFaculty, setShowFaculty] = useState(false);
+
+  const [sharedCourses, setSharedCourses] = useState<Course[]>([]);
+
   const [cards, setCards] = useState<CardState[]>([mkCard(0),mkCard(1),mkCard(2),mkCard(3)]);
   const [selectedCards, setSelectedCards] = useState<(SelectedCard|null)[]>([null,null,null,null]);
   const [nextId, setNextId] = useState(4);
 
-  const loadCampuses = useCallback(async () => {
-    if (campusLoaded) return;
-    const [camRes, facRes] = await Promise.all([
-      fetch("/api/campus").then(r => r.json()),
-      fetch("/api/faculty").then(r => r.json()),
-    ]);
-    setCampuses(Array.isArray(camRes) ? camRes : []);
-    setFaculties(Array.isArray(facRes) ? facRes : []);
-    setCampusLoaded(true);
-  }, [campusLoaded]);
+  const handleSwitchToManual = useCallback(async () => {
+    setMode("manual");
+    if (manualReady) return;
+    setManualLoading(true);
+    try {
+      const [camRes, facRes] = await Promise.all([getCampuses(), getFaculties()]);
+      setCampuses(camRes);
+      setFaculties(facRes);
+      setManualReady(true);
+    } finally {
+      setManualLoading(false);
+    }
+  }, [manualReady]);
 
-  const handleCampusChange = useCallback((val: string) => {
+  const handleCampusChange = useCallback(async (val: string) => {
     setCampus(val);
-    setShowFaculty(val === "B");
+    const needsFaculty = val === "B";
+    setShowFaculty(needsFaculty);
     setFaculty("");
+    setSharedCourses([]);
     setCards([mkCard(0),mkCard(1),mkCard(2),mkCard(3)]);
     setSelectedCards([null,null,null,null]);
+
+    if (needsFaculty) return;
+
+    setCoursesLoading(true);
+    try {
+      const courses = await getCourses(val, val);
+      setSharedCourses(courses);
+    } finally {
+      setCoursesLoading(false);
+    }
   }, []);
 
-  const loadCoursesForCard = useCallback(async (cardId: number) => {
-    if (!campus) return;
-    setCards(prev => prev.map(c => c.id === cardId ? { ...c, loading: true } : c));
-    const tries = [
-      { campus, faculty: showFaculty ? faculty : campus },
-      { campus, faculty: "" },
-      { campus, faculty: "All" },
-    ];
-    let courses: Course[] = [];
-    for (const payload of tries) {
-      try {
-        const res = await fetch("/api/courses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-        if (!res.ok) continue;
-        courses = await res.json();
-        if (courses.length > 0) break;
-      } catch { continue; }
+  const handleFacultyChange = useCallback(async (val: string) => {
+    setFaculty(val);
+    setSharedCourses([]);
+    setCards([mkCard(0),mkCard(1),mkCard(2),mkCard(3)]);
+    setSelectedCards([null,null,null,null]);
+    if (!val) return;
+
+    setCoursesLoading(true);
+    try {
+      const courses = await getCourses(campus, val);
+      setSharedCourses(courses);
+    } finally {
+      setCoursesLoading(false);
     }
-    setCards(prev => prev.map(c => c.id === cardId ? { ...c, courses, loading: false } : c));
-  }, [campus, faculty, showFaculty]);
+  }, [campus]);
 
   const handleCourseChange = useCallback(async (cardId: number, url: string) => {
     const cardIndex = cards.findIndex(c => c.id === cardId);
@@ -90,19 +112,18 @@ export default function HomePage() {
       setSelectedCards(prev => { const n = [...prev]; n[cardIndex] = null; return n; });
       return;
     }
-    const course = cards[cardIndex]?.courses.find(c => c.url === url);
-    const label = course ? `${course.code}` : url;
+    const course = sharedCourses.find(c => c.url === url);
+    const label = course?.code ?? url;
     setCards(prev => prev.map(c => c.id === cardId ? { ...c, courseUrl: url, courseLabel: label, loading: true } : c));
     try {
-      const res = await fetch(`/api/timetable?url=${encodeURIComponent(url)}`);
-      const data = await res.json();
+      const data = await getTimetable(url);
       const tt: TimetableRow[] = data.timetable ?? [];
       const groups = [...new Set(tt.map(r => r.group).filter(Boolean))];
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, timetable: tt, groups, group: "", loading: false } : c));
     } catch {
       setCards(prev => prev.map(c => c.id === cardId ? { ...c, loading: false } : c));
     }
-  }, [cards]);
+  }, [cards, sharedCourses]);
 
   const handleGroupChange = useCallback((cardId: number, group: string) => {
     const cardIndex = cards.findIndex(c => c.id === cardId);
@@ -146,9 +167,7 @@ export default function HomePage() {
     if (!studentId.trim()) return;
     setStudentLoading(true); setStudentError(""); setStudentCards([]);
     try {
-      const res = await fetch(`/api/student?studentNo=${encodeURIComponent(studentId.trim())}`);
-      if (!res.ok) { const e = await res.json(); setStudentError(e.error || "Not found"); return; }
-      const data = await res.json();
+      const data = await getStudentSchedule(studentId.trim());
       const tt: TimetableRow[] = data.timetable ?? [];
       const byCourse: Record<string, TimetableRow[]> = {};
       tt.forEach(r => { const k = r.course ?? "?"; if (!byCourse[k]) byCourse[k] = []; byCourse[k].push(r); });
@@ -158,15 +177,26 @@ export default function HomePage() {
         courseLabel: `${code}${rows[0]?.subject ? " – " + rows[0].subject : ""}`,
         color: PRESET_COLORS[i % PRESET_COLORS.length],
       })));
-    } catch { setStudentError("Network error. Please try again."); }
-    finally { setStudentLoading(false); }
+    } catch (err) {
+      setStudentError(err instanceof Error ? err.message : "Network error. Please try again.");
+    } finally {
+      setStudentLoading(false);
+    }
   };
 
-  const displayCards = mode === "auto" ? studentCards.map(s => s as SelectedCard | null) : selectedCards;
+  const displayCards = mode === "auto"
+    ? studentCards.map(s => s as SelectedCard | null)
+    : selectedCards;
+
+  const coursesReady = sharedCourses.length > 0;
 
   return (
     <div className="min-h-screen bg-[#0f0f11] flex flex-col select-none">
-      <Navbar mode={mode} onModeChange={setMode} onManualClick={loadCampuses} />
+      <Navbar
+        mode={mode}
+        onModeChange={(m) => m === "manual" ? handleSwitchToManual() : setMode(m)}
+        onManualClick={handleSwitchToManual}
+      />
 
       <main className="max-w-6xl mx-auto w-full px-4 py-6 flex flex-col gap-5 flex-1">
         {mode === "auto" && (
@@ -198,69 +228,109 @@ export default function HomePage() {
 
         {mode === "manual" && (
           <section className={SECTION}>
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-              <span className={LABEL + " mb-0"}>Timetable Generator</span>
-              <div className="flex gap-2">
-                <button onClick={addCard} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-gray-300 transition hover:cursor-pointer">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
-                  Add
-                </button>
-                <button onClick={clearAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-gray-400 transition hover:cursor-pointer">
-                  Clear
-                </button>
+            {manualLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-3">
+                <svg className="w-6 h-6 animate-spin text-purple-400" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                <p className="text-sm text-gray-500">Loading campuses…</p>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                  <span className={LABEL + " mb-0"}>Timetable Generator</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addCard}
+                      disabled={!coursesReady}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-gray-300 transition hover:cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
+                      Add
+                    </button>
+                    <button onClick={clearAll} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-gray-400 transition hover:cursor-pointer">
+                      Clear
+                    </button>
+                  </div>
+                </div>
 
-            <div className="flex gap-3 mb-4 flex-wrap">
-              <Dropdown placeholder="Select Campus" options={campuses.map(c => ({ value: c.id, text: c.text }))} value={campus} onChange={handleCampusChange} className="min-w-50 flex-1" />
-              {showFaculty && (
-                <Dropdown placeholder="Select Faculty" options={faculties.map(f => ({ value: f.id, text: f.text }))} value={faculty} onChange={val => setFaculty(val)} className="min-w-50 flex-1" />
-              )}
-            </div>
+                <div className="flex gap-3 mb-4 flex-wrap">
+                  <Dropdown
+                    placeholder="Select Campus"
+                    options={campuses.map(c => ({ value: c.id, text: c.text }))}
+                    value={campus}
+                    onChange={handleCampusChange}
+                    className="min-w-50 flex-1"
+                  />
+                  {showFaculty && (
+                    <Dropdown
+                      placeholder="Select Faculty"
+                      options={faculties.map(f => ({ value: f.id, text: f.text }))}
+                      value={faculty}
+                      onChange={handleFacultyChange}
+                      className="min-w-50 flex-1"
+                    />
+                  )}
+                </div>
 
-            <div className="flex flex-col gap-2.5">
-              {cards.map((card, idx) => (
-                <div key={card.id} className="flex flex-wrap items-center gap-2.5 bg-[#111113] rounded-xl p-3 border border-white/5">
-                  <div className="relative shrink-0">
-                    <input type="color" value={card.color} onChange={e => handleColorChange(idx, e.target.value)}
-                      className="w-8 h-8 rounded-lg cursor-pointer border border-white/10 p-0.5 bg-[#1c1c1f]" />
-                  </div>
-                  <div className="flex-1 min-w-40">
-                    <Dropdown
-                      placeholder="Select Subject"
-                      options={card.courses.map(c => ({ value: c.url, text: `${c.code}` }))}
-                      value={card.courseUrl}
-                      onChange={val => handleCourseChange(card.id, val)}
-                      onOpen={() => card.courses.length === 0 && loadCoursesForCard(card.id)}
-                      disabled={!campus}
-                      className="w-full"
-                    />
-                  </div>
-                  <div className="w-full sm:w-36">
-                    <Dropdown
-                      placeholder="Group"
-                      options={card.groups.map(g => ({ value: g, text: g }))}
-                      value={card.group}
-                      onChange={val => handleGroupChange(card.id, val)}
-                      disabled={!card.courseUrl}
-                      className="w-full"
-                    />
-                  </div>
-                  {card.loading && (
+                {coursesLoading && (
+                  <div className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-xl bg-purple-500/10 border border-purple-500/20">
                     <svg className="w-4 h-4 animate-spin text-purple-400 shrink-0" viewBox="0 0 24 24" fill="none">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
                     </svg>
-                  )}
-                  {idx >= 4 && (
-                    <button onClick={() => removeCard(card.id)} className="text-gray-600 hover:text-red-400 transition shrink-0 p-1 hover:cursor-pointer">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
-                    </button>
-                  )}
+                    <p className="text-xs text-purple-300">Loading courses for selected campus…</p>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-2.5">
+                  {cards.map((card, idx) => (
+                    <div key={card.id} className="flex flex-wrap items-center gap-2.5 bg-[#111113] rounded-xl p-3 border border-white/5">
+                      <div className="relative shrink-0">
+                        <input type="color" value={card.color} onChange={e => handleColorChange(idx, e.target.value)}
+                          className="w-8 h-8 rounded-lg cursor-pointer border border-white/10 p-0.5 bg-[#1c1c1f]" />
+                      </div>
+                      <div className="flex-1 min-w-40">
+                        <Dropdown
+                          placeholder={coursesLoading ? "Loading courses…" : !coursesReady ? "Select a campus first" : "Select Subject"}
+                          options={sharedCourses.map(c => ({ value: c.url, text: c.code }))}
+                          value={card.courseUrl}
+                          onChange={val => handleCourseChange(card.id, val)}
+                          disabled={!coursesReady || coursesLoading}
+                          className="w-full"
+                        />
+                      </div>
+                      <div className="w-full sm:w-36">
+                        <Dropdown
+                          placeholder="Group"
+                          options={card.groups.map(g => ({ value: g, text: g }))}
+                          value={card.group}
+                          onChange={val => handleGroupChange(card.id, val)}
+                          disabled={!card.courseUrl || card.loading}
+                          className="w-full"
+                        />
+                      </div>
+                      {card.loading && (
+                        <svg className="w-4 h-4 animate-spin text-purple-400 shrink-0" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                        </svg>
+                      )}
+                      {idx >= 4 && (
+                        <button onClick={() => removeCard(card.id)} className="text-gray-600 hover:text-red-400 transition shrink-0 p-1 hover:cursor-pointer">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <p className="text-[11px] text-gray-600 mt-3">Click a subject dropdown to load courses for the selected campus.</p>
+
+                {!campus && !coursesLoading && (
+                  <p className="text-[11px] text-gray-600 mt-3">Select a campus to load available courses.</p>
+                )}
+              </>
+            )}
           </section>
         )}
 
