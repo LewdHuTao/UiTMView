@@ -7,31 +7,43 @@ import { jsPDF } from "jspdf";
 export default function ExportButtons() {
   const [exporting, setExporting] = useState<"png" | "pdf" | null>(null);
 
-  async function getCanvas(): Promise<HTMLCanvasElement | null> {
-    const el = document.getElementById("timetableGrid");
-    if (!el) {
-      alert("No timetable to export — add some subjects first.");
-      return null;
-    }
+  async function getCanvas(forPDF: boolean = false): Promise<HTMLCanvasElement | null> {
+    const el = document.getElementById("timetableGrid") as HTMLElement;
+    if (!el) return null;
 
-    return await html2canvas(el, {
-      scale: 4,
+    const original = {
+      width: el.style.width,
+      height: el.style.height,
+      overflow: el.style.overflow,
+    };
+
+    const fullWidth = el.scrollWidth;
+    const fullHeight = el.scrollHeight;
+
+    el.style.width = fullWidth + "px";
+    el.style.height = fullHeight + "px";
+    el.style.overflow = "visible";
+
+    const canvas = await html2canvas(el, {
+      scale: 3,
       backgroundColor: "#111113",
       useCORS: true,
       logging: false,
-      scrollX: 0,
-      scrollY: 0,
-      width: el.scrollWidth,
-      height: el.scrollHeight,
-      windowWidth: el.scrollWidth,
-      windowHeight: el.scrollHeight,
+      windowWidth: fullWidth,
+      windowHeight: fullHeight,
     });
+
+    el.style.width = original.width;
+    el.style.height = original.height;
+    el.style.overflow = original.overflow;
+
+    return canvas;
   }
 
   async function handlePNG() {
     setExporting("png");
     try {
-      const canvas = await getCanvas();
+      const canvas = await getCanvas(false);
       if (!canvas) return;
 
       const blob = await new Promise<Blob | null>((resolve) =>
@@ -46,9 +58,6 @@ export default function ExportButtons() {
       a.download = `Timetable-${new Date().toISOString().slice(0, 10)}.png`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (e) {
-      console.error(e);
-      alert("Export failed.");
     } finally {
       setExporting(null);
     }
@@ -57,26 +66,19 @@ export default function ExportButtons() {
   async function handlePDF() {
     setExporting("pdf");
     try {
-      const canvas = await getCanvas();
+      const canvas = await getCanvas(true);
       if (!canvas) return;
 
-      const imgData = canvas.toDataURL("image/png");
-
-      const pxToPt = 72 / 96;
-      const widthPt = (canvas.width / 3) * pxToPt;
-      const heightPt = (canvas.height / 3) * pxToPt;
+      const imgData = canvas.toDataURL("image/jpeg", 0.85);
 
       const pdf = new jsPDF({
-        orientation: widthPt > heightPt ? "landscape" : "portrait",
-        unit: "pt",
-        format: [widthPt, heightPt],
+        orientation: canvas.width > canvas.height ? "landscape" : "portrait",
+        unit: "px",
+        format: [canvas.width, canvas.height],
       });
 
-      pdf.addImage(imgData, "PNG", 0, 0, widthPt, heightPt);
+      pdf.addImage(imgData, "JPEG", 0, 0, canvas.width, canvas.height);
       pdf.save(`Timetable-${new Date().toISOString().slice(0, 10)}.pdf`);
-    } catch (e) {
-      console.error(e);
-      alert("PDF export failed.");
     } finally {
       setExporting(null);
     }
