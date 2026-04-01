@@ -1,6 +1,6 @@
 {
-  "name": "uitm-timetable",
-  "version": "1.1.0",
+  "name": "uitmview",
+  "version": "1.1.5",
   "private": false,
   "scripts": {
     "dev": "next dev",
