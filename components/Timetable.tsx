@@ -40,6 +40,38 @@ function lum(hex: string): number {
 }
 const fg = (hex: string) => lum(hex) > 0.45 ? "#0f0f11" : "#ffffff";
 
+function mergeBlocks(
+  blocks: { s: number; e: number; code: string; time: string; room: string; bg: string }[]
+) {
+  if (blocks.length === 0) return blocks;
+
+  const sorted = [...blocks].sort((a, b) => a.s - b.s);
+  const merged = [{ ...sorted[0] }];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = merged[merged.length - 1];
+    const cur = sorted[i];
+
+    const sameCode = prev.code === cur.code;
+
+    const sameRoom =
+      prev.room && cur.room
+        ? prev.room === cur.room
+        : true;
+
+    const consecutive = Math.abs(prev.e - cur.s) < 0.02;
+
+    if (sameCode && sameRoom && consecutive) {
+      prev.e = cur.e;
+      prev.time = `${fmt(prev.s)}–${fmt(prev.e)}`;
+    } else {
+      merged.push({ ...cur });
+    }
+  }
+
+  return merged;
+}
+
 const LEFT_COL_PX = 64;
 const COL_PX = 90;
 const ROW_H = 108;
@@ -120,6 +152,8 @@ export default function Timetable({ selectedCards }: TimetableProps) {
             });
           });
 
+          const mergedBlocks = mergeBlocks(blocks);
+
           return (
             <div
               key={day}
@@ -144,9 +178,9 @@ export default function Timetable({ selectedCards }: TimetableProps) {
                 ))}
               </div>
 
-              {blocks.map((b, bi) => {
+              {mergedBlocks.map((b, bi) => {
                 const left = LEFT_COL_PX + (b.s - minH) * COL_PX;
-                const width = (b.e - b.s) * COL_PX - 4; 
+                const width = (b.e - b.s) * COL_PX - 4;
                 const color = b.bg;
                 const text = fg(color);
                 return (
